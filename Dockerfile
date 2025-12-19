@@ -1,25 +1,21 @@
-# 1. Use Python 3.10 Slim
-FROM python:3.10-slim
+# 1. Use the Full Python Image (Debian-based)
+# This includes system libraries that help pip find the correct binary wheels.
+FROM python:3.10
 
 # 2. Install Runtime Dependencies
-# We REMOVED 'pkg-config' and 'libav...-dev' because they force a broken source build.
-# We kept 'ffmpeg' and 'gcc' which are needed for running the app.
+# We only need FFmpeg now (for processing audio). 
+# We don't need gcc/pkg-config because we will use binary wheels.
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    libsndfile1 \
-    libgomp1 \
-    git \
-    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
 
-# 3. Upgrade pip & Install Dependencies
-# CRITICAL: Upgrading pip helps it find the pre-compiled 'binary wheels'
-# so it doesn't try (and fail) to build from source.
-RUN pip install --upgrade pip && \
+# 3. Upgrade pip, setuptools, and wheel
+# This is CRITICAL. It ensures the installer can handle the binary files.
+RUN pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r requirements.txt
 
 COPY . .
