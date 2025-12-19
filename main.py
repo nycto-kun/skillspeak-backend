@@ -38,8 +38,6 @@ app = FastAPI(title="Skillspeak API", version="2.0.0")
 SECRET_KEY = os.getenv("SECRET_KEY", "secret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
-# We fetch this here, but we also check it inside the function to be safe
-BREVO_API_KEY = os.getenv("BREVO_API_KEY") 
 LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "fr", "Japanese": "ja"}
 
 # --- STARTUP CHECKS ---
@@ -48,27 +46,23 @@ async def startup_check():
     print("\n" + "="*40)
     print("🚀 STARTING SKILLSPEAK SERVER...")
     
-    # 1. FFmpeg Check
     if not shutil.which("ffmpeg"):
         print("❌ CRITICAL: FFmpeg is missing!")
     else:
         print("✅ FFmpeg found.")
-
-    # 2. EMAIL CONFIG CHECK (DEBUGGING YOUR ISSUE)
-    print(f"📧 Email Address Configured: {EMAIL_ADDRESS}")
     
-    if not BREVO_API_KEY:
-        print("❌ CRITICAL: BREVO_API_KEY is Missing or Empty!")
-        print("   -> Did you name the variable exactly 'BREVO_API_KEY' in Render?")
-        print("   -> Did you click 'Save'?")
+    # Debug Email Settings
+    raw_key = os.getenv("BREVO_API_KEY", "")
+    # CLEAN THE KEY: Remove spaces, tabs, and quotes
+    clean_key = raw_key.strip().strip('"').strip("'")
+    
+    if not clean_key:
+        print("❌ CRITICAL: BREVO_API_KEY is Empty!")
     else:
-        # We print the first 4 characters to prove it loaded, but hide the rest
-        print(f"✅ BREVO_API_KEY Found! Starts with: {BREVO_API_KEY[:4]}******")
-        print(f"   -> Key Length: {len(BREVO_API_KEY)} characters")
-        
-        # Check for spaces (common copy-paste error)
-        if " " in BREVO_API_KEY:
-            print("❌ WARNING: Your API Key contains spaces! Please remove them in Render.")
+        print(f"✅ BREVO_API_KEY Loaded. Length: {len(clean_key)}")
+        print(f"   -> Starts with: {clean_key[:5]}...")
+        if clean_key != raw_key:
+            print("⚠️  WARNING: Your key had spaces/quotes. I fixed it automatically.")
 
     print("="*40 + "\n")
 
@@ -170,15 +164,18 @@ def verify_token(token: str) -> int:
 async def get_current_user(auth: str = Header(None)):
     if not auth: raise HTTPException(401, "No auth header"); return verify_token(auth)
 
-# --- BREVO EMAIL SENDER ---
+# --- BREVO EMAIL SENDER (ROBUST VERSION) ---
 def send_email(to: str, otp: str):
     print(f"\n🔐 VERIFICATION CODE for {to}: {otp}\n")
 
-    # Fetch fresh env var in case it updated
-    current_api_key = os.getenv("BREVO_API_KEY")
+    # 1. Load Raw Key
+    raw_key = os.getenv("BREVO_API_KEY", "")
+    
+    # 2. Aggressively Clean Key (Fixes spaces and quotes)
+    api_key = raw_key.strip().strip('"').strip("'")
 
-    if not current_api_key:
-        print("❌ send_email failed: BREVO_API_KEY is not set.")
+    if not api_key:
+        print("❌ send_email failed: BREVO_API_KEY is empty after cleaning.")
         return False
     
     if not EMAIL_ADDRESS:
@@ -192,16 +189,19 @@ def send_email(to: str, otp: str):
         "to": [{"email": to}],
         "subject": "Skillspeak Verification Code",
         "htmlContent": f"""
-            <h1>Welcome to Skillspeak!</h1>
-            <p>Your verification code is: <strong>{otp}</strong></p>
-            <p>This code expires in 10 minutes.</p>
+            <div style="font-family: Arial, sans-serif; padding: 20px;">
+                <h1 style="color: #4A90E2;">Welcome to Skillspeak!</h1>
+                <p>Your verification code is:</p>
+                <h2 style="background-color: #f0f0f0; padding: 10px; display: inline-block; letter-spacing: 5px;">{otp}</h2>
+                <p>This code expires in 10 minutes.</p>
+            </div>
         """
     }
     
     headers = {
         "accept": "application/json",
         "content-type": "application/json",
-        "api-key": current_api_key
+        "api-key": api_key
     }
 
     try:
@@ -211,6 +211,9 @@ def send_email(to: str, otp: str):
             return True
         else:
             print(f"❌ Brevo Error: {response.status_code} - {response.text}")
+            # If 401, the key is definitely invalid/expired
+            if response.status_code == 401:
+                print("💡 HINT: Generate a NEW key on Brevo and update Render.")
             return False
     except Exception as e:
         print(f"❌ Failed to send email via API: {e}")
