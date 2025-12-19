@@ -1,7 +1,7 @@
-# --- FORCE IPv4 PATCH (CORRECTED) ---
+# --- FORCE IPv4 PATCH (CRITICAL FOR RENDER) ---
 import socket
 
-# 1. Save the original function first!
+# 1. Save the original function
 _original_getaddrinfo = socket.getaddrinfo
 
 # 2. Define the wrapper that calls the ORIGINAL function
@@ -127,9 +127,10 @@ def get_db():
 # --- CONFIG ---
 SECRET_KEY = os.getenv("SECRET_KEY", "secret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-# Settings for Gmail
+
+# SWITCH BACK TO PORT 587 (Standard for Cloud)
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = 465
+SMTP_PORT = 587
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "fr", "Japanese": "ja"}
@@ -159,6 +160,7 @@ def verify_token(token: str) -> int:
 async def get_current_user(auth: str = Header(None)):
     if not auth: raise HTTPException(401, "No auth header"); return verify_token(auth)
 
+# UPDATED SEND_EMAIL FOR PORT 587 + IPv4 FORCE
 def send_email(to: str, otp: str):
     if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
         print("❌ Email credentials missing")
@@ -172,10 +174,13 @@ def send_email(to: str, otp: str):
         body = f"Welcome to Skillspeak!\n\nYour verification code is: {otp}\n\nThis code expires in 10 minutes."
         msg.attach(MIMEText(body, 'plain'))
         
-        # Use SMTP_SSL for Port 465 (Now safer with IPv4 forced)
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_ADDRESS, to, msg.as_string())
+        # Use Standard SMTP with starttls()
+        # This works on Render because we successfully forced IPv4 at the top of the file
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_ADDRESS, to, msg.as_string())
+        server.quit()
             
         print("✅ Email sent successfully!")
         return True
@@ -186,8 +191,11 @@ def send_email(to: str, otp: str):
 # --- ENDPOINTS ---
 @app.post("/register")
 async def register(d: UserRegister, db: Session = Depends(get_db)):
+    # Check if user exists and is verified
     if db.query(User).filter(User.email==d.email, User.email_verified==True).first():
         raise HTTPException(400, "Email taken")
+    
+    # Cleanup unverified attempts
     db.query(User).filter(User.email==d.email).delete()
     db.query(EmailVerification).filter(EmailVerification.email==d.email).delete()
     
