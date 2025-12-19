@@ -37,7 +37,8 @@ app = FastAPI(title="Skillspeak API", version="2.0.0")
 # --- GLOBAL CONFIG ---
 SECRET_KEY = os.getenv("SECRET_KEY", "secret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+BREVO_API_KEY = "xsmtpsib-86b007724296b4ec66e17e321b968b2860fb0a225dcfe9eb17731e5ecdc49b1e-4DHMcf0ioW7kuCtc"
+EMAIL_ADDRESS = "gianangelomendoza@gmail.com"
 LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "fr", "Japanese": "ja"}
 
 # --- STARTUP CHECKS ---
