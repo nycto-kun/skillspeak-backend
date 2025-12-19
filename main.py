@@ -1,10 +1,15 @@
-# --- FORCE IPv4 PATCH (MUST BE AT THE TOP) ---
-# This fixes [Errno 101] Network is unreachable on Render/Docker
+# --- FORCE IPv4 PATCH (CORRECTED) ---
 import socket
+
+# 1. Save the original function first!
+_original_getaddrinfo = socket.getaddrinfo
+
+# 2. Define the wrapper that calls the ORIGINAL function
 def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
-    # Force socket.AF_INET (IPv4)
-    return socket.getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-# Monkey-patch the socket library
+    # Force IPv4 (AF_INET)
+    return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+# 3. Apply the patch
 socket.getaddrinfo = getaddrinfo_ipv4
 # ---------------------------------------------
 
@@ -122,7 +127,7 @@ def get_db():
 # --- CONFIG ---
 SECRET_KEY = os.getenv("SECRET_KEY", "secret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-# Settings for Gmail (Force IPv4 will make this work)
+# Settings for Gmail
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = 465
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
@@ -193,7 +198,6 @@ async def register(d: UserRegister, db: Session = Depends(get_db)):
     db.add(EmailVerification(email=d.email, otp_code=otp, expires_at=datetime.utcnow()+timedelta(minutes=10)))
     db.commit()
     
-    # Try to send email, but don't crash if it fails
     email_sent = send_email(d.email, otp)
     if not email_sent:
         print("⚠️ Warning: Email failed to send during registration")
@@ -213,7 +217,6 @@ async def resend_email_endpoint(req: ResendOTPRequest, db: Session = Depends(get
     if send_email(req.email, otp):
         return {"success": True, "message": "Email sent"}
     else:
-        # Return 500 but don't crash the server
         raise HTTPException(500, "Failed to send email")
 
 @app.post("/login")
