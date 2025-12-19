@@ -31,19 +31,14 @@ app = FastAPI(title="Skillspeak API", version="2.0.0")
 # --- STARTUP CHECKS ---
 @app.on_event("startup")
 async def startup_check():
-    # 1. Check for FFmpeg
     if not shutil.which("ffmpeg"):
         print("❌ CRITICAL ERROR: FFmpeg is missing!")
     else:
         print("✅ FFmpeg found.")
 
-    # 2. Load Faster-Whisper Model
     print("⏳ Loading Faster-Whisper Model... (tiny)")
     global model
     try:
-        # 'tiny' uses very little RAM (~70MB). 
-        # 'cpu' is required for Render Free Tier (no GPU).
-        # 'int8' quantization makes it even smaller.
         model = WhisperModel("tiny", device="cpu", compute_type="int8")
         print("✅ Faster-Whisper Model Loaded!")
     except Exception as e:
@@ -61,7 +56,6 @@ app.add_middleware(
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     DATABASE_URL = "sqlite:///./skillspeak.db"
-    print("⚠️  No DATABASE_URL found. Using local SQLite.")
 elif DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -118,8 +112,9 @@ def get_db():
 # --- CONFIG ---
 SECRET_KEY = os.getenv("SECRET_KEY", "secret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
+# SWITCH TO PORT 465 FOR SSL
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+SMTP_PORT = 465  
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "fr", "Japanese": "ja"}
@@ -136,6 +131,8 @@ class AnalysisResponse(BaseModel):
     fillerWordsList: List[str]; pronunciationScore: int; suggestions: List[str]; duration: int
 class EmailVerificationRequest(BaseModel):
     email: str; otp: str
+class ResendOTPRequest(BaseModel):
+    email: str
 
 # --- HELPERS ---
 def hash_password(p: str) -> str: return hashlib.sha256(p.encode()).hexdigest()
@@ -146,15 +143,31 @@ def verify_token(token: str) -> int:
     except: raise HTTPException(status_code=401, detail="Invalid token")
 async def get_current_user(auth: str = Header(None)):
     if not auth: raise HTTPException(401, "No auth header"); return verify_token(auth)
+
+# UPDATED SEND_EMAIL TO USE SSL (PORT 465)
 def send_email(to: str, otp: str):
-    if not EMAIL_ADDRESS or not EMAIL_PASSWORD: return False
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        print("❌ Email credentials missing")
+        return False
     try:
-        s = smtplib.SMTP(SMTP_SERVER, SMTP_PORT); s.starttls()
-        s.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-        msg = MIMEMultipart(); msg['From']=EMAIL_ADDRESS; msg['To']=to; msg['Subject']="Skillspeak Code"
-        msg.attach(MIMEText(f"Your code: {otp}", 'plain'))
-        s.sendmail(EMAIL_ADDRESS, to, msg.as_string()); s.quit(); return True
-    except Exception as e: print(e); return False
+        print(f"📧 Sending email to {to} via {SMTP_SERVER}:{SMTP_PORT}...")
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_ADDRESS
+        msg['To'] = to
+        msg['Subject'] = "Skillspeak Verification Code"
+        body = f"Welcome to Skillspeak!\n\nYour verification code is: {otp}\n\nThis code expires in 10 minutes."
+        msg.attach(MIMEText(body, 'plain'))
+        
+        # Use SMTP_SSL for Port 465
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_ADDRESS, to, msg.as_string())
+            
+        print("✅ Email sent successfully!")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to send email: {e}")
+        return False
 
 # --- ENDPOINTS ---
 @app.post("/register")
@@ -163,12 +176,36 @@ async def register(d: UserRegister, db: Session = Depends(get_db)):
         raise HTTPException(400, "Email taken")
     db.query(User).filter(User.email==d.email).delete()
     db.query(EmailVerification).filter(EmailVerification.email==d.email).delete()
+    
     u = User(email=d.email, password_hash=hash_password(d.password), name=d.name)
     db.add(u); db.commit()
+    
     otp = str(random.randint(100000,999999))
     db.add(EmailVerification(email=d.email, otp_code=otp, expires_at=datetime.utcnow()+timedelta(minutes=10)))
-    db.commit(); send_email(d.email, otp)
-    return {"success": True}
+    db.commit()
+    
+    # Try to send email, but don't crash if it fails
+    email_sent = send_email(d.email, otp)
+    if not email_sent:
+        print("⚠️ Warning: Email failed to send during registration")
+        
+    return {"success": True, "message": "Registration successful"}
+
+# RESTORED MISSING ENDPOINT
+@app.post("/send-verification-email")
+async def resend_email_endpoint(req: ResendOTPRequest, db: Session = Depends(get_db)):
+    u = db.query(User).filter(User.email == req.email).first()
+    if not u: raise HTTPException(404, "User not found")
+    if u.email_verified: raise HTTPException(400, "Already verified")
+
+    otp = str(random.randint(100000,999999))
+    db.add(EmailVerification(email=req.email, otp_code=otp, expires_at=datetime.utcnow()+timedelta(minutes=10)))
+    db.commit()
+    
+    if send_email(req.email, otp):
+        return {"success": True, "message": "Email sent"}
+    else:
+        raise HTTPException(500, "Failed to send email")
 
 @app.post("/login")
 async def login(d: UserLogin, db: Session = Depends(get_db)):
@@ -199,14 +236,13 @@ async def tts(text: str, language: str = "English"):
         os.unlink(path); return {"success": True, "audio_base64": b64}
     except Exception as e: return {"success": False, "message": str(e)}
 
-# ANALYSIS (Updated for Faster-Whisper)
+# ANALYSIS
 FILLER_WORDS = {"English": ["um", "uh", "like"], "Tagalog": ["ano", "parang"]}
 SUGGESTIONS = {"English": ["Reduce fillers"], "Tagalog": ["Bawasan ang fillers"]}
 
 def analyze_logic(content: bytes, language: str):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f: f.write(content); path=f.name
     try:
-        # Faster-Whisper Transcribe
         segments, info = model.transcribe(path, beam_size=1)
         transcript = " ".join([s.text for s in segments]).strip()
     except Exception as e: print(e); transcript = ""
