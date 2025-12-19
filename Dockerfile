@@ -1,27 +1,27 @@
 # 1. Use Python 3.10 Slim
 FROM python:3.10-slim
 
-# 2. Install SYSTEM dependencies (Crucial Step)
-# ffmpeg: For processing audio files
-# gcc: For compiling Python C-extensions
-# libsndfile1: For reading audio files
-# libgomp1: Required by faster-whisper optimizations
+# 2. Install SYSTEM dependencies
+# Added: pkg-config (to find libraries)
+# Added: libav...-dev (development headers for building PyAV)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     gcc \
+    pkg-config \
     libsndfile1 \
     libgomp1 \
     git \
+    libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. Set work directory
+# 3. Work Directory
 WORKDIR /app
 
 # 4. Copy requirements
 COPY requirements.txt .
 
 # 5. Install Python dependencies
-# Now this will succeed because gcc and ffmpeg are present
+# Now PyAV can build successfully because it can find the headers
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 6. Copy application code
