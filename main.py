@@ -1,3 +1,13 @@
+# --- FORCE IPv4 PATCH (MUST BE AT THE TOP) ---
+# This fixes [Errno 101] Network is unreachable on Render/Docker
+import socket
+def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
+    # Force socket.AF_INET (IPv4)
+    return socket.getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+# Monkey-patch the socket library
+socket.getaddrinfo = getaddrinfo_ipv4
+# ---------------------------------------------
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -112,9 +122,9 @@ def get_db():
 # --- CONFIG ---
 SECRET_KEY = os.getenv("SECRET_KEY", "secret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-# SWITCH TO PORT 465 FOR SSL
+# Settings for Gmail (Force IPv4 will make this work)
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = 465  
+SMTP_PORT = 465
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "fr", "Japanese": "ja"}
@@ -144,13 +154,12 @@ def verify_token(token: str) -> int:
 async def get_current_user(auth: str = Header(None)):
     if not auth: raise HTTPException(401, "No auth header"); return verify_token(auth)
 
-# UPDATED SEND_EMAIL TO USE SSL (PORT 465)
 def send_email(to: str, otp: str):
     if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
         print("❌ Email credentials missing")
         return False
     try:
-        print(f"📧 Sending email to {to} via {SMTP_SERVER}:{SMTP_PORT}...")
+        print(f"📧 Sending email to {to} via {SMTP_SERVER}:{SMTP_PORT} (IPv4)...")
         msg = MIMEMultipart()
         msg['From'] = EMAIL_ADDRESS
         msg['To'] = to
@@ -158,7 +167,7 @@ def send_email(to: str, otp: str):
         body = f"Welcome to Skillspeak!\n\nYour verification code is: {otp}\n\nThis code expires in 10 minutes."
         msg.attach(MIMEText(body, 'plain'))
         
-        # Use SMTP_SSL for Port 465
+        # Use SMTP_SSL for Port 465 (Now safer with IPv4 forced)
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
             server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
             server.sendmail(EMAIL_ADDRESS, to, msg.as_string())
@@ -191,7 +200,6 @@ async def register(d: UserRegister, db: Session = Depends(get_db)):
         
     return {"success": True, "message": "Registration successful"}
 
-# RESTORED MISSING ENDPOINT
 @app.post("/send-verification-email")
 async def resend_email_endpoint(req: ResendOTPRequest, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.email == req.email).first()
@@ -205,6 +213,7 @@ async def resend_email_endpoint(req: ResendOTPRequest, db: Session = Depends(get
     if send_email(req.email, otp):
         return {"success": True, "message": "Email sent"}
     else:
+        # Return 500 but don't crash the server
         raise HTTPException(500, "Failed to send email")
 
 @app.post("/login")
