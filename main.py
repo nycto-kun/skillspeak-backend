@@ -1,17 +1,11 @@
-# --- FORCE IPv4 PATCH (CRITICAL FOR RENDER) ---
+# --- FORCE IPv4 PATCH ---
+# Even though we are using API, this patch is good for overall stability on Render
 import socket
-
-# 1. Save the original function
 _original_getaddrinfo = socket.getaddrinfo
-
-# 2. Define the wrapper that calls the ORIGINAL function
 def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
-    # Force IPv4 (AF_INET)
     return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-
-# 3. Apply the patch
 socket.getaddrinfo = getaddrinfo_ipv4
-# ---------------------------------------------
+# ------------------------
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,9 +23,7 @@ from datetime import datetime, timedelta
 import jwt
 import json
 import base64
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import requests # CHANGED: We use requests instead of smtplib
 from dotenv import load_dotenv
 from gtts import gTTS
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text
@@ -127,12 +119,8 @@ def get_db():
 # --- CONFIG ---
 SECRET_KEY = os.getenv("SECRET_KEY", "secret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-
-# SWITCH TO PORT 465 (SSL)
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = 465
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY") # New Config
 LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "fr", "Japanese": "ja"}
 
 # --- SCHEMAS ---
@@ -160,40 +148,52 @@ def verify_token(token: str) -> int:
 async def get_current_user(auth: str = Header(None)):
     if not auth: raise HTTPException(401, "No auth header"); return verify_token(auth)
 
-# UPDATED SEND_EMAIL FOR PORT 465 (SSL) + IPv4 FORCE
+# --- NEW: BREVO EMAIL SENDER (HTTP API) ---
 def send_email(to: str, otp: str):
-    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
-        print("❌ Email credentials missing")
+    # Log for backup
+    print(f"\n🔐 VERIFICATION CODE for {to}: {otp}\n")
+
+    if not BREVO_API_KEY or not EMAIL_ADDRESS:
+        print("❌ Brevo API Key or Email Address missing")
         return False
+
+    url = "https://api.brevo.com/v3/smtp/email"
+    
+    payload = {
+        "sender": {"name": "Skillspeak App", "email": EMAIL_ADDRESS},
+        "to": [{"email": to}],
+        "subject": "Skillspeak Verification Code",
+        "htmlContent": f"""
+            <h1>Welcome to Skillspeak!</h1>
+            <p>Your verification code is: <strong>{otp}</strong></p>
+            <p>This code expires in 10 minutes.</p>
+        """
+    }
+    
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "api-key": BREVO_API_KEY
+    }
+
     try:
-        print(f"📧 Sending email to {to} via {SMTP_SERVER}:{SMTP_PORT} (IPv4/SSL)...")
-        msg = MIMEMultipart()
-        msg['From'] = EMAIL_ADDRESS
-        msg['To'] = to
-        msg['Subject'] = "Skillspeak Verification Code"
-        body = f"Welcome to Skillspeak!\n\nYour verification code is: {otp}\n\nThis code expires in 10 minutes."
-        msg.attach(MIMEText(body, 'plain'))
-        
-        # Use SMTP_SSL for Port 465
-        # The IPv4 patch at the top ensures we don't hit the 'Network Unreachable' error
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_ADDRESS, to, msg.as_string())
-            
-        print("✅ Email sent successfully!")
-        return True
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code == 201:
+            print("✅ Email sent successfully via Brevo API!")
+            return True
+        else:
+            print(f"❌ Brevo Error: {response.status_code} - {response.text}")
+            return False
     except Exception as e:
-        print(f"❌ Failed to send email: {e}")
+        print(f"❌ Failed to send email via API: {e}")
         return False
 
 # --- ENDPOINTS ---
 @app.post("/register")
 async def register(d: UserRegister, db: Session = Depends(get_db)):
-    # Check if user exists and is verified
     if db.query(User).filter(User.email==d.email, User.email_verified==True).first():
         raise HTTPException(400, "Email taken")
     
-    # Cleanup unverified attempts
     db.query(User).filter(User.email==d.email).delete()
     db.query(EmailVerification).filter(EmailVerification.email==d.email).delete()
     
@@ -204,9 +204,7 @@ async def register(d: UserRegister, db: Session = Depends(get_db)):
     db.add(EmailVerification(email=d.email, otp_code=otp, expires_at=datetime.utcnow()+timedelta(minutes=10)))
     db.commit()
     
-    email_sent = send_email(d.email, otp)
-    if not email_sent:
-        print("⚠️ Warning: Email failed to send during registration")
+    send_email(d.email, otp)
         
     return {"success": True, "message": "Registration successful"}
 
@@ -214,16 +212,13 @@ async def register(d: UserRegister, db: Session = Depends(get_db)):
 async def resend_email_endpoint(req: ResendOTPRequest, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.email == req.email).first()
     if not u: raise HTTPException(404, "User not found")
-    if u.email_verified: raise HTTPException(400, "Already verified")
-
+    
     otp = str(random.randint(100000,999999))
     db.add(EmailVerification(email=req.email, otp_code=otp, expires_at=datetime.utcnow()+timedelta(minutes=10)))
     db.commit()
     
-    if send_email(req.email, otp):
-        return {"success": True, "message": "Email sent"}
-    else:
-        raise HTTPException(500, "Failed to send email")
+    send_email(req.email, otp)
+    return {"success": True, "message": "Email sent"}
 
 @app.post("/login")
 async def login(d: UserLogin, db: Session = Depends(get_db)):

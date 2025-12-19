@@ -9,3 +9,4 @@ gTTS==2.5.1
 faster-whisper
 SQLAlchemy==2.0.23
 psycopg2-binary==2.9.9
+requests==2.31.0
