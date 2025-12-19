@@ -1,5 +1,4 @@
 # --- FORCE IPv4 PATCH ---
-# Even though we are using API, this patch is good for overall stability on Render
 import socket
 _original_getaddrinfo = socket.getaddrinfo
 def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
@@ -23,7 +22,7 @@ from datetime import datetime, timedelta
 import jwt
 import json
 import base64
-import requests # CHANGED: We use requests instead of smtplib
+import requests 
 from dotenv import load_dotenv
 from gtts import gTTS
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text
@@ -35,13 +34,43 @@ load_dotenv()
 
 app = FastAPI(title="Skillspeak API", version="2.0.0")
 
+# --- GLOBAL CONFIG ---
+SECRET_KEY = os.getenv("SECRET_KEY", "secret")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+# We fetch this here, but we also check it inside the function to be safe
+BREVO_API_KEY = os.getenv("BREVO_API_KEY") 
+LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "fr", "Japanese": "ja"}
+
 # --- STARTUP CHECKS ---
 @app.on_event("startup")
 async def startup_check():
+    print("\n" + "="*40)
+    print("🚀 STARTING SKILLSPEAK SERVER...")
+    
+    # 1. FFmpeg Check
     if not shutil.which("ffmpeg"):
-        print("❌ CRITICAL ERROR: FFmpeg is missing!")
+        print("❌ CRITICAL: FFmpeg is missing!")
     else:
         print("✅ FFmpeg found.")
+
+    # 2. EMAIL CONFIG CHECK (DEBUGGING YOUR ISSUE)
+    print(f"📧 Email Address Configured: {EMAIL_ADDRESS}")
+    
+    if not BREVO_API_KEY:
+        print("❌ CRITICAL: BREVO_API_KEY is Missing or Empty!")
+        print("   -> Did you name the variable exactly 'BREVO_API_KEY' in Render?")
+        print("   -> Did you click 'Save'?")
+    else:
+        # We print the first 4 characters to prove it loaded, but hide the rest
+        print(f"✅ BREVO_API_KEY Found! Starts with: {BREVO_API_KEY[:4]}******")
+        print(f"   -> Key Length: {len(BREVO_API_KEY)} characters")
+        
+        # Check for spaces (common copy-paste error)
+        if " " in BREVO_API_KEY:
+            print("❌ WARNING: Your API Key contains spaces! Please remove them in Render.")
+
+    print("="*40 + "\n")
 
     print("⏳ Loading Faster-Whisper Model... (tiny)")
     global model
@@ -116,13 +145,6 @@ def get_db():
     try: yield db
     finally: db.close()
 
-# --- CONFIG ---
-SECRET_KEY = os.getenv("SECRET_KEY", "secret")
-ALGORITHM = os.getenv("ALGORITHM", "HS256")
-EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
-BREVO_API_KEY = os.getenv("BREVO_API_KEY") # New Config
-LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "fr", "Japanese": "ja"}
-
 # --- SCHEMAS ---
 class UserRegister(BaseModel):
     email: str; password: str; name: str
@@ -148,13 +170,19 @@ def verify_token(token: str) -> int:
 async def get_current_user(auth: str = Header(None)):
     if not auth: raise HTTPException(401, "No auth header"); return verify_token(auth)
 
-# --- NEW: BREVO EMAIL SENDER (HTTP API) ---
+# --- BREVO EMAIL SENDER ---
 def send_email(to: str, otp: str):
-    # Log for backup
     print(f"\n🔐 VERIFICATION CODE for {to}: {otp}\n")
 
-    if not BREVO_API_KEY or not EMAIL_ADDRESS:
-        print("❌ Brevo API Key or Email Address missing")
+    # Fetch fresh env var in case it updated
+    current_api_key = os.getenv("BREVO_API_KEY")
+
+    if not current_api_key:
+        print("❌ send_email failed: BREVO_API_KEY is not set.")
+        return False
+    
+    if not EMAIL_ADDRESS:
+        print("❌ send_email failed: EMAIL_ADDRESS is not set.")
         return False
 
     url = "https://api.brevo.com/v3/smtp/email"
@@ -173,7 +201,7 @@ def send_email(to: str, otp: str):
     headers = {
         "accept": "application/json",
         "content-type": "application/json",
-        "api-key": BREVO_API_KEY
+        "api-key": current_api_key
     }
 
     try:
