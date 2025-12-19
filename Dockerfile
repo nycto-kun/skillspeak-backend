@@ -2,10 +2,11 @@
 FROM python:3.10-slim
 
 # 2. Install system dependencies
-# This is the CRITICAL step: We install 'ffmpeg' here so the server has it.
+# Added 'libgomp1' which is required for faster-whisper
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     gcc \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # 3. Set the working directory inside the container

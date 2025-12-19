@@ -6,6 +6,6 @@ pydantic==2.5.0
 PyJWT==2.8.0
 python-dotenv==1.0.0
 gTTS==2.5.1
-openai-whisper==20231117
+faster-whisper==0.10.0
 SQLAlchemy==2.0.23
 psycopg2-binary==2.9.9
