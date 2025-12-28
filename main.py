@@ -22,30 +22,27 @@ from datetime import datetime, timedelta
 import jwt
 import json
 import base64
-import requests # Make sure 'requests' is in requirements.txt
+import requests 
 from dotenv import load_dotenv
 from gtts import gTTS
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
-# Load environment variables (for DB URL, etc.)
+# Load environment variables
 load_dotenv()
 
 app = FastAPI(title="Skillspeak API", version="2.0.0")
 
 # =================================================================
-# 🔑  CONFIGURATION SECTION
+# 🔑  CONFIGURATION SECTION (SECURE MODE)
 # =================================================================
 
-# 1. BREVO API KEY (HARDCODED FOR RELIABILITY)
-# 👉 PASTE YOUR KEY INSIDE THE QUOTES BELOW.
-# 👉 It MUST start with "xkeysib-". If it starts with "xsmtpsib-", it is WRONG.
-part1 = "xkeysib-86b007724296b4ec66e17e321b968b2860fb0a"
-part2 = "Y225dcfe9eb17731e5ecdc49b1e-ekrtR3WReU86hFSE"
-BREVO_API_KEY = part1 + part2 
+# 1. API KEY - READS FROM RENDER DASHBOARD
+# We grab the key from the Environment Variable "BREVO_API_KEY"
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 
-# 2. YOUR SENDER EMAIL
+# 2. YOUR SENDER EMAIL (Verified in Brevo)
 SENDER_EMAIL = "gianangelomendoza@gmail.com"
 
 # 3. OTHER SETTINGS
@@ -66,13 +63,14 @@ async def startup_check():
     else:
         print("✅ FFmpeg found.")
         
-    # Check Key Status
-    if "PASTE_YOUR_KEY_HERE" in BREVO_API_KEY:
-        print("❌ CRITICAL: You forgot to paste your Brevo API Key in main.py!")
-    elif not BREVO_API_KEY.startswith("xkeysib-"):
-        print("❌ WARNING: Your Key does not start with 'xkeysib-'. Emails might fail.")
+    # Check if Key loaded from Render Environment
+    if not BREVO_API_KEY:
+        print("❌ CRITICAL: BREVO_API_KEY is missing from Render Environment!")
+        print("   -> Go to Render Dashboard > Environment and add BREVO_API_KEY.")
     else:
-        print(f"✅ Brevo API Key Loaded (Starts with: {BREVO_API_KEY[:10]}...)")
+        # Print first 5 chars to verify it loaded (Securely)
+        clean_key = BREVO_API_KEY.strip().strip('"').strip("'")
+        print(f"✅ Brevo API Key Loaded (Starts with: {clean_key[:5]}...)")
 
     print("="*40 + "\n")
 
@@ -174,16 +172,17 @@ def verify_token(token: str) -> int:
 async def get_current_user(auth: str = Header(None)):
     if not auth: raise HTTPException(401, "No auth header"); return verify_token(auth)
 
-# --- EMAIL SENDER (BREVO API) ---
+# --- EMAIL SENDER (BREVO API via ENV VAR) ---
 def send_email(to: str, otp: str):
     print(f"\n🔐 VERIFICATION CODE for {to}: {otp}\n")
     
-    # Clean the key just in case
-    api_key = BREVO_API_KEY.strip().strip('"').strip("'")
-
-    if not api_key or "PASTE_YOUR_KEY" in api_key:
-        print("❌ Failed: API Key is missing or default.")
+    # Check if Key loaded from Render
+    if not BREVO_API_KEY:
+        print("❌ Failed: BREVO_API_KEY is missing from Environment Variables.")
         return False
+        
+    # Clean the key (removes quotes/spaces if pasted wrong in Render)
+    api_key = BREVO_API_KEY.strip().strip('"').strip("'")
 
     url = "https://api.brevo.com/v3/smtp/email"
     
