@@ -1,10 +1,10 @@
-# --- FORCE IPv4 PATCH ---
+# --- FORCE IPv4 PATCH (CRITICAL FOR RENDER STABILITY) ---
 import socket
 _original_getaddrinfo = socket.getaddrinfo
 def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
     return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
 socket.getaddrinfo = getaddrinfo_ipv4
-# ------------------------
+# --------------------------------------------------------
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,24 +22,36 @@ from datetime import datetime, timedelta
 import jwt
 import json
 import base64
-import requests 
+import requests # Make sure 'requests' is in requirements.txt
 from dotenv import load_dotenv
 from gtts import gTTS
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 
-# Load environment variables
+# Load environment variables (for DB URL, etc.)
 load_dotenv()
 
 app = FastAPI(title="Skillspeak API", version="2.0.0")
 
-# --- GLOBAL CONFIG ---
+# =================================================================
+# 🔑  CONFIGURATION SECTION
+# =================================================================
+
+# 1. BREVO API KEY (HARDCODED FOR RELIABILITY)
+# 👉 PASTE YOUR KEY INSIDE THE QUOTES BELOW.
+# 👉 It MUST start with "xkeysib-". If it starts with "xsmtpsib-", it is WRONG.
+BREVO_API_KEY = "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" 
+
+# 2. YOUR SENDER EMAIL
+SENDER_EMAIL = "gianangelomendoza@gmail.com"
+
+# 3. OTHER SETTINGS
 SECRET_KEY = os.getenv("SECRET_KEY", "secret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-BREVO_API_KEY = "xsmtpsib-86b007724296b4ec66e17e321b968b2860fb0a225dcfe9eb17731e5ecdc49b1e-4DHMcf0ioW7kuCtc"
-EMAIL_ADDRESS = "gianangelomendoza@gmail.com"
 LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "fr", "Japanese": "ja"}
+
+# =================================================================
 
 # --- STARTUP CHECKS ---
 @app.on_event("startup")
@@ -51,19 +63,14 @@ async def startup_check():
         print("❌ CRITICAL: FFmpeg is missing!")
     else:
         print("✅ FFmpeg found.")
-    
-    # Debug Email Settings
-    raw_key = os.getenv("BREVO_API_KEY", "")
-    # CLEAN THE KEY: Remove spaces, tabs, and quotes
-    clean_key = raw_key.strip().strip('"').strip("'")
-    
-    if not clean_key:
-        print("❌ CRITICAL: BREVO_API_KEY is Empty!")
+        
+    # Check Key Status
+    if "PASTE_YOUR_KEY_HERE" in BREVO_API_KEY:
+        print("❌ CRITICAL: You forgot to paste your Brevo API Key in main.py!")
+    elif not BREVO_API_KEY.startswith("xkeysib-"):
+        print("❌ WARNING: Your Key does not start with 'xkeysib-'. Emails might fail.")
     else:
-        print(f"✅ BREVO_API_KEY Loaded. Length: {len(clean_key)}")
-        print(f"   -> Starts with: {clean_key[:5]}...")
-        if clean_key != raw_key:
-            print("⚠️  WARNING: Your key had spaces/quotes. I fixed it automatically.")
+        print(f"✅ Brevo API Key Loaded (Starts with: {BREVO_API_KEY[:10]}...)")
 
     print("="*40 + "\n")
 
@@ -165,37 +172,31 @@ def verify_token(token: str) -> int:
 async def get_current_user(auth: str = Header(None)):
     if not auth: raise HTTPException(401, "No auth header"); return verify_token(auth)
 
-# --- BREVO EMAIL SENDER (ROBUST VERSION) ---
+# --- EMAIL SENDER (BREVO API) ---
 def send_email(to: str, otp: str):
     print(f"\n🔐 VERIFICATION CODE for {to}: {otp}\n")
-
-    # 1. Load Raw Key
-    raw_key = os.getenv("BREVO_API_KEY", "")
     
-    # 2. Aggressively Clean Key (Fixes spaces and quotes)
-    api_key = raw_key.strip().strip('"').strip("'")
+    # Clean the key just in case
+    api_key = BREVO_API_KEY.strip().strip('"').strip("'")
 
-    if not api_key:
-        print("❌ send_email failed: BREVO_API_KEY is empty after cleaning.")
-        return False
-    
-    if not EMAIL_ADDRESS:
-        print("❌ send_email failed: EMAIL_ADDRESS is not set.")
+    if not api_key or "PASTE_YOUR_KEY" in api_key:
+        print("❌ Failed: API Key is missing or default.")
         return False
 
     url = "https://api.brevo.com/v3/smtp/email"
     
     payload = {
-        "sender": {"name": "Skillspeak App", "email": EMAIL_ADDRESS},
+        "sender": {"name": "Skillspeak App", "email": SENDER_EMAIL},
         "to": [{"email": to}],
         "subject": "Skillspeak Verification Code",
         "htmlContent": f"""
-            <div style="font-family: Arial, sans-serif; padding: 20px;">
-                <h1 style="color: #4A90E2;">Welcome to Skillspeak!</h1>
-                <p>Your verification code is:</p>
-                <h2 style="background-color: #f0f0f0; padding: 10px; display: inline-block; letter-spacing: 5px;">{otp}</h2>
+            <html>
+            <body>
+                <h1>Welcome to Skillspeak!</h1>
+                <p>Your verification code is: <strong style="font-size: 24px;">{otp}</strong></p>
                 <p>This code expires in 10 minutes.</p>
-            </div>
+            </body>
+            </html>
         """
     }
     
@@ -212,9 +213,6 @@ def send_email(to: str, otp: str):
             return True
         else:
             print(f"❌ Brevo Error: {response.status_code} - {response.text}")
-            # If 401, the key is definitely invalid/expired
-            if response.status_code == 401:
-                print("💡 HINT: Generate a NEW key on Brevo and update Render.")
             return False
     except Exception as e:
         print(f"❌ Failed to send email via API: {e}")
