@@ -10,7 +10,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Form, Hea
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
-from pydub import AudioSegment
+from pydub import AudioSegment, effects  # Required for Audio Normalization
 import io
 import tempfile
 import os
@@ -28,26 +28,138 @@ from gtts import gTTS
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
+import re  # For regex cleaning
 
 # Load environment variables
 load_dotenv()
 
-app = FastAPI(title="Skillspeak API", version="2.0.0")
+app = FastAPI(title="Skillspeak API", version="2.2.0")
 
 # =================================================================
-# 🔑  CONFIGURATION SECTION
+# 🔑  CONFIGURATION
 # =================================================================
-
-# 1. API KEY - READS FROM RENDER DASHBOARD
 BREVO_API_KEY = os.getenv("BREVO_API_KEY")
-
-# 2. YOUR SENDER EMAIL (Verified in Brevo)
 SENDER_EMAIL = "gianangelomendoza@gmail.com"
-
-# 3. OTHER SETTINGS
 SECRET_KEY = os.getenv("SECRET_KEY", "secret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "fr", "Japanese": "ja"}
+
+# =================================================================
+# 🧠 SMART ANALYSIS ENGINE (LOGIC & HEURISTICS)
+# =================================================================
+
+FILLER_WORDS = {
+    "English": ["um", "uh", "like", "you know", "actually", "basically", "literally", "i mean", "sort of"],
+    "Tagalog": ["ano", "parang", "kuwan", "ah", "eh", "bale", "kumbaga", "siguro", "di ba"]
+}
+
+def generate_smart_suggestions(wpm: int, filler_count: int, language: str, duration: float) -> List[str]:
+    suggestions = []
+
+    # 1. DURATION CHECK
+    if duration < 5.0:
+        return ["The recording was too short to analyze accurately. Try speaking for at least 10 seconds."]
+
+    # 2. PACE ANALYSIS (WPM)
+    if wpm < 90:
+        suggestions.append("You are speaking quite slowly (< 90 WPM). Try to increase your energy and pace to keep listeners engaged.")
+    elif wpm > 160:
+        suggestions.append("You are speaking very fast (> 160 WPM). Slow down slightly to ensure every word is clear and easy to follow.")
+    else:
+        suggestions.append("Great pacing! You are within the ideal conversational range (90-150 WPM).")
+
+    # 3. FILLER WORD ANALYSIS
+    if filler_count == 0:
+        suggestions.append("Excellent flow! No filler words were detected. You sound very confident.")
+    elif filler_count <= 2:
+        suggestions.append("Good clarity. You kept filler words to a minimum.")
+    elif filler_count > 5:
+        suggestions.append(f"Detected {filler_count} filler words. Try pausing silently to gather your thoughts instead of using fillers.")
+
+    # 4. LANGUAGE SPECIFIC TIPS
+    if language == "Tagalog":
+        if filler_count > 0:
+            suggestions.append("Sa Tagalog, subukang iwasan ang labis na paggamit ng 'ano' at 'parang' habang nag-iisip.")
+        if wpm > 160:
+            suggestions.append("Masyadong mabilis ang iyong pagsasalita. Subukang bagalan para mas maintindihan.")
+    elif language == "English":
+        if "like" in str(suggestions) or filler_count > 3:
+            suggestions.append("Try to avoid using 'like' as a connector. Use transition words like 'furthermore' or 'additionally'.")
+
+    return suggestions
+
+def analyze_logic(content: bytes, language: str):
+    # 1. PRE-PROCESS: Normalize Audio (CRITICAL FOR TINY MODEL)
+    # This boosts volume so the tiny model hears quiet words better.
+    try:
+        raw_audio = AudioSegment.from_file(io.BytesIO(content))
+        normalized_audio = effects.normalize(raw_audio)
+        
+        # Save to temp file for Whisper to read
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+            normalized_audio.export(f.name, format="wav")
+            path = f.name
+            
+        duration = len(normalized_audio) / 1000.0
+    except Exception as e:
+        print(f"Audio Processing Error: {e}")
+        return {"error": "Invalid audio file"}
+
+    # 2. TRANSCRIBE (Using 'tiny' model)
+    try:
+        # beam_size=5 helps 'tiny' be slightly more accurate
+        segments, info = model.transcribe(path, beam_size=5, language=LANGUAGE_CODES.get(language, "en"))
+        transcript = " ".join([s.text for s in segments]).strip()
+        print(f"📝 Transcript ({language}): {transcript}")
+    except Exception as e:
+        print(f"Transcribe Error: {e}")
+        transcript = ""
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+    # 3. CALCULATE METRICS
+    # Clean up transcript for counting (remove punctuation)
+    clean_text = re.sub(r'[^\w\s]', '', transcript.lower()) 
+    words = clean_text.split()
+    word_count = len(words)
+    
+    # Calculate WPM
+    wpm = int((word_count / duration) * 60) if duration > 0 else 0
+    
+    # Count Fillers
+    target_fillers = FILLER_WORDS.get(language, FILLER_WORDS["English"])
+    found_fillers = []
+    filler_count = 0
+    
+    for word in words:
+        if word in target_fillers:
+            found_fillers.append(word)
+            filler_count += 1
+            
+    # Calculate Pronunciation/Clarity Score
+    # Base score 100, minus points for excessive fillers or extreme speed
+    score = 100
+    score -= (filler_count * 3) # -3 points per filler
+    if wpm < 80 or wpm > 170: 
+        score -= 10 # -10 points for bad pacing
+    
+    # Clamp score between 0 and 100
+    pronunciation_score = max(0, min(100, score))
+
+    # 4. GENERATE SUGGESTIONS
+    suggestions = generate_smart_suggestions(wpm, filler_count, language, duration)
+
+    return {
+        "transcript": transcript,
+        "language": language,
+        "wpm": wpm,
+        "fillerWords": filler_count,
+        "fillerWordsList": found_fillers,
+        "pronunciationScore": pronunciation_score,
+        "suggestions": suggestions,
+        "duration": int(duration)
+    }
 
 # =================================================================
 
@@ -55,18 +167,17 @@ LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "
 @app.on_event("startup")
 async def startup_check():
     print("\n" + "="*40)
-    print("🚀 STARTING SKILLSPEAK SERVER...")
+    print("🚀 STARTING SKILLSPEAK SERVER (SMART LOGIC V2)...")
     
     if not shutil.which("ffmpeg"):
         print("❌ CRITICAL: FFmpeg is missing!")
     else:
         print("✅ FFmpeg found.")
         
-    if not BREVO_API_KEY:
-        print("❌ CRITICAL: BREVO_API_KEY is missing from Render Environment!")
+    if BREVO_API_KEY:
+        print(f"✅ Brevo API Key Loaded.")
     else:
-        clean_key = BREVO_API_KEY.strip().strip('"').strip("'")
-        print(f"✅ Brevo API Key Loaded (Starts with: {clean_key[:5]}...)")
+        print("❌ WARNING: BREVO_API_KEY is missing.")
 
     print("="*40 + "\n")
 
@@ -170,86 +281,55 @@ def verify_token(token: str) -> int:
     except: 
         raise HTTPException(status_code=401, detail="Invalid token")
 
-# 🔥 FIXED: Changed 'auth' to 'authorization' to match standard headers
 async def get_current_user(authorization: str = Header(None)):
     if not authorization: 
         raise HTTPException(401, "No auth header")
     return verify_token(authorization)
 
-# --- EMAIL SENDER (BREVO API) ---
+# --- EMAIL SENDER ---
 def send_email(to: str, otp: str):
     print(f"\n🔐 VERIFICATION CODE for {to}: {otp}\n")
-    
-    if not BREVO_API_KEY:
-        print("❌ Failed: BREVO_API_KEY is missing from Environment Variables.")
-        return False
-        
+    if not BREVO_API_KEY: return False
     api_key = BREVO_API_KEY.strip().strip('"').strip("'")
-
     url = "https://api.brevo.com/v3/smtp/email"
-    
     payload = {
         "sender": {"name": "Skillspeak App", "email": SENDER_EMAIL},
         "to": [{"email": to}],
         "subject": "Skillspeak Verification Code",
-        "htmlContent": f"""
-            <html>
-            <body>
-                <h1>Welcome to Skillspeak!</h1>
-                <p>Your verification code is: <strong style="font-size: 24px;">{otp}</strong></p>
-                <p>This code expires in 10 minutes.</p>
-            </body>
-            </html>
-        """
+        "htmlContent": f"<h1>{otp}</h1>"
     }
-    
-    headers = {
-        "accept": "application/json",
-        "content-type": "application/json",
-        "api-key": api_key
-    }
-
+    headers = {"accept": "application/json", "content-type": "application/json", "api-key": api_key}
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        if response.status_code == 201:
-            print("✅ Email sent successfully via Brevo API!")
-            return True
-        else:
-            print(f"❌ Brevo Error: {response.status_code} - {response.text}")
-            return False
-    except Exception as e:
-        print(f"❌ Failed to send email via API: {e}")
-        return False
+        requests.post(url, json=payload, headers=headers)
+        return True
+    except: return False
 
 # --- ENDPOINTS ---
+@app.post("/analyze-file", response_model=AnalysisResponse)
+async def analyze(language: str = "English", audio: UploadFile = File(...)):
+    return analyze_logic(await audio.read(), language)
+
 @app.post("/register")
 async def register(d: UserRegister, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email==d.email, User.email_verified==True).first():
         raise HTTPException(400, "Email taken")
-    
     db.query(User).filter(User.email==d.email).delete()
     db.query(EmailVerification).filter(EmailVerification.email==d.email).delete()
-    
     u = User(email=d.email, password_hash=hash_password(d.password), name=d.name)
     db.add(u); db.commit()
-    
     otp = str(random.randint(100000,999999))
     db.add(EmailVerification(email=d.email, otp_code=otp, expires_at=datetime.utcnow()+timedelta(minutes=10)))
     db.commit()
-    
     send_email(d.email, otp)
-        
     return {"success": True, "message": "Registration successful"}
 
 @app.post("/send-verification-email")
 async def resend_email_endpoint(req: ResendOTPRequest, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.email == req.email).first()
     if not u: raise HTTPException(404, "User not found")
-    
     otp = str(random.randint(100000,999999))
     db.add(EmailVerification(email=req.email, otp_code=otp, expires_at=datetime.utcnow()+timedelta(minutes=10)))
     db.commit()
-    
     send_email(req.email, otp)
     return {"success": True, "message": "Email sent"}
 
@@ -282,37 +362,6 @@ async def tts(text: str, language: str = "English"):
         os.unlink(path); return {"success": True, "audio_base64": b64}
     except Exception as e: return {"success": False, "message": str(e)}
 
-# ANALYSIS
-FILLER_WORDS = {"English": ["um", "uh", "like"], "Tagalog": ["ano", "parang"]}
-SUGGESTIONS = {"English": ["Reduce fillers"], "Tagalog": ["Bawasan ang fillers"]}
-
-def analyze_logic(content: bytes, language: str):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f: f.write(content); path=f.name
-    try:
-        segments, info = model.transcribe(path, beam_size=1)
-        transcript = " ".join([s.text for s in segments]).strip()
-    except Exception as e: print(e); transcript = ""
-    finally: os.unlink(path)
-
-    try: duration = len(AudioSegment.from_file(io.BytesIO(content))) / 1000.0
-    except: duration = 1.0
-    
-    words = transcript.lower().split()
-    wpm = int((len(words)/duration)*60) if duration>0 else 0
-    fillers = [f for f in FILLER_WORDS.get(language, FILLER_WORDS["English"]) if f in transcript.lower()]
-    count = sum(transcript.lower().count(f) for f in FILLER_WORDS.get(language, FILLER_WORDS["English"]))
-    
-    return {
-        "transcript": transcript, "language": language, "wpm": wpm, "fillerWords": count,
-        "fillerWordsList": fillers, "pronunciationScore": max(0, 100-count*2),
-        "suggestions": SUGGESTIONS.get(language, ["Practice more"]), "duration": int(duration)
-    }
-
-@app.post("/analyze-file", response_model=AnalysisResponse)
-async def analyze(language: str = "English", audio: UploadFile = File(...)):
-    return analyze_logic(await audio.read(), language)
-
-# SESSIONS
 @app.post("/sessions")
 async def save_sess(
     language: str = Form(...), transcript: str = Form(...), wpm: int = Form(...),
