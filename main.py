@@ -35,11 +35,10 @@ load_dotenv()
 app = FastAPI(title="Skillspeak API", version="2.0.0")
 
 # =================================================================
-# 🔑  CONFIGURATION SECTION (SECURE MODE)
+# 🔑  CONFIGURATION SECTION
 # =================================================================
 
 # 1. API KEY - READS FROM RENDER DASHBOARD
-# We grab the key from the Environment Variable "BREVO_API_KEY"
 BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 
 # 2. YOUR SENDER EMAIL (Verified in Brevo)
@@ -63,12 +62,9 @@ async def startup_check():
     else:
         print("✅ FFmpeg found.")
         
-    # Check if Key loaded from Render Environment
     if not BREVO_API_KEY:
         print("❌ CRITICAL: BREVO_API_KEY is missing from Render Environment!")
-        print("   -> Go to Render Dashboard > Environment and add BREVO_API_KEY.")
     else:
-        # Print first 5 chars to verify it loaded (Securely)
         clean_key = BREVO_API_KEY.strip().strip('"').strip("'")
         print(f"✅ Brevo API Key Loaded (Starts with: {clean_key[:5]}...)")
 
@@ -164,24 +160,30 @@ class ResendOTPRequest(BaseModel):
 
 # --- HELPERS ---
 def hash_password(p: str) -> str: return hashlib.sha256(p.encode()).hexdigest()
+
 def create_token(uid: int) -> str:
     return jwt.encode({'user_id': uid, 'exp': datetime.utcnow()+timedelta(days=30)}, SECRET_KEY, algorithm=ALGORITHM)
-def verify_token(token: str) -> int:
-    try: return jwt.decode(token.replace('Bearer ', ''), SECRET_KEY, algorithms=[ALGORITHM]).get('user_id')
-    except: raise HTTPException(status_code=401, detail="Invalid token")
-async def get_current_user(auth: str = Header(None)):
-    if not auth: raise HTTPException(401, "No auth header"); return verify_token(auth)
 
-# --- EMAIL SENDER (BREVO API via ENV VAR) ---
+def verify_token(token: str) -> int:
+    try: 
+        return jwt.decode(token.replace('Bearer ', ''), SECRET_KEY, algorithms=[ALGORITHM]).get('user_id')
+    except: 
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+# 🔥 FIXED: Changed 'auth' to 'authorization' to match standard headers
+async def get_current_user(authorization: str = Header(None)):
+    if not authorization: 
+        raise HTTPException(401, "No auth header")
+    return verify_token(authorization)
+
+# --- EMAIL SENDER (BREVO API) ---
 def send_email(to: str, otp: str):
     print(f"\n🔐 VERIFICATION CODE for {to}: {otp}\n")
     
-    # Check if Key loaded from Render
     if not BREVO_API_KEY:
         print("❌ Failed: BREVO_API_KEY is missing from Environment Variables.")
         return False
         
-    # Clean the key (removes quotes/spaces if pasted wrong in Render)
     api_key = BREVO_API_KEY.strip().strip('"').strip("'")
 
     url = "https://api.brevo.com/v3/smtp/email"
