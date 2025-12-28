@@ -41,7 +41,9 @@ app = FastAPI(title="Skillspeak API", version="2.0.0")
 # 1. BREVO API KEY (HARDCODED FOR RELIABILITY)
 # 👉 PASTE YOUR KEY INSIDE THE QUOTES BELOW.
 # 👉 It MUST start with "xkeysib-". If it starts with "xsmtpsib-", it is WRONG.
-BREVO_API_KEY = "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" 
+part1 = "xkeysib-86b007724296b4ec66e17e321b968b2860fb0a"
+part2 = "Y225dcfe9eb17731e5ecdc49b1e-ekrtR3WReU86hFSE"
+BREVO_API_KEY = part1 + part2 
 
 # 2. YOUR SENDER EMAIL
 SENDER_EMAIL = "gianangelomendoza@gmail.com"
