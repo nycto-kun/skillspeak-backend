@@ -24,7 +24,6 @@ import json
 import base64
 import requests 
 from dotenv import load_dotenv
-from gtts import gTTS
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -32,7 +31,7 @@ import re
 
 load_dotenv()
 
-app = FastAPI(title="Skillspeak API", version="3.1.0 (Tiny + Prompt Fix)")
+app = FastAPI(title="Skillspeak API", version="3.2.0 (Native Prompts)")
 
 # =================================================================
 # 🔑  CONFIGURATION
@@ -51,7 +50,19 @@ LANGUAGE_CODES = {
 }
 
 # =================================================================
-# 🧠 SMART ANALYSIS ENGINE (LOCALIZED)
+# 🧠 NATIVE PROMPTS (THE FIX)
+# =================================================================
+# This primes the "tiny" model with the target language so it stays in character.
+NATIVE_PROMPTS = {
+    "English": "This is a transcription. It is not a translation.",
+    "Tagalog": "Ito ay isang transcription ng Tagalog audio. Huwag i-translate sa English.",
+    "Spanish": "Esta es una transcripción exacta del audio en español.",
+    "French": "Voici une transcription textuelle de l'enregistrement en français.",
+    "Japanese": "これは日本語の音声の書き起こしです。翻訳ではありません。"
+}
+
+# =================================================================
+# 🧠 SMART ANALYSIS ENGINE
 # =================================================================
 
 FILLER_WORDS = {
@@ -152,19 +163,19 @@ def analyze_logic(content: bytes, language: str):
         print(f"Audio Processing Error: {e}")
         return {"error": "Invalid audio file"}
 
-    # 2. TRANSCRIBE (FIX APPLIED HERE)
+    # 2. TRANSCRIBE (FIXED WITH NATIVE PROMPTS)
     try:
         iso_code = LANGUAGE_CODES.get(language, "en")
         
-        # PROMPT TRICK: We tell the model "This is [Language]" so it doesn't switch to English.
-        prompt_text = f"This is a transcription in {language}. Please transcribe exactly what is said. Do not translate."
+        # KEY FIX: Use a prompt WRITTEN IN the target language
+        native_prompt = NATIVE_PROMPTS.get(language, "This is a transcription.")
 
         segments, info = model.transcribe(
             path, 
             beam_size=5, 
             language=iso_code,
             task="transcribe",
-            initial_prompt=prompt_text  # <--- THIS IS THE MAGIC FIX
+            initial_prompt=native_prompt  # <--- Priming in the native language
         )
         transcript = " ".join([s.text for s in segments]).strip()
         print(f"📝 Transcript ({language}): {transcript}")
@@ -175,7 +186,7 @@ def analyze_logic(content: bytes, language: str):
         if os.path.exists(path):
             os.unlink(path)
 
-    # 3. METRICS & SUGGESTIONS
+    # 3. METRICS
     clean_text = re.sub(r'[^\w\s]', '', transcript.lower()) 
     words = clean_text.split()
     word_count = len(words)
@@ -215,13 +226,12 @@ def analyze_logic(content: bytes, language: str):
 
 @app.on_event("startup")
 async def startup_check():
-    print("\n🚀 STARTING SKILLSPEAK SERVER (Tiny + Prompt Fix)...")
+    print("\n🚀 STARTING SKILLSPEAK SERVER (Tiny + Native Prompts)...")
     if not shutil.which("ffmpeg"): print("❌ CRITICAL: FFmpeg is missing!")
     else: print("✅ FFmpeg found.")
     
     global model
     try:
-        # KEPT TINY AS REQUESTED
         model = WhisperModel("tiny", device="cpu", compute_type="int8") 
         print("✅ Faster-Whisper Model Loaded (Tiny)!")
     except Exception as e:
@@ -295,8 +305,6 @@ class UserRegister(BaseModel):
     email: str; password: str; name: str
 class UserLogin(BaseModel):
     email: str; password: str
-class UserUpdate(BaseModel):
-    name: Optional[str] = None; preferred_language: Optional[str] = None; new_password: Optional[str] = None
 class AnalysisResponse(BaseModel):
     transcript: str; language: str; wpm: int; fillerWords: int
     fillerWordsList: List[str]; pronunciationScore: int; suggestions: List[str]; duration: int
