@@ -31,7 +31,7 @@ import re
 
 load_dotenv()
 
-app = FastAPI(title="Skillspeak API", version="3.2.0 (Native Prompts)")
+app = FastAPI(title="Skillspeak API", version="3.3.0 (Profile Fixes)")
 
 # =================================================================
 # 🔑  CONFIGURATION
@@ -50,9 +50,8 @@ LANGUAGE_CODES = {
 }
 
 # =================================================================
-# 🧠 NATIVE PROMPTS (THE FIX)
+# 🧠 NATIVE PROMPTS (THE TRANSLATION FIX)
 # =================================================================
-# This primes the "tiny" model with the target language so it stays in character.
 NATIVE_PROMPTS = {
     "English": "This is a transcription. It is not a translation.",
     "Tagalog": "Ito ay isang transcription ng Tagalog audio. Huwag i-translate sa English.",
@@ -163,11 +162,9 @@ def analyze_logic(content: bytes, language: str):
         print(f"Audio Processing Error: {e}")
         return {"error": "Invalid audio file"}
 
-    # 2. TRANSCRIBE (FIXED WITH NATIVE PROMPTS)
+    # 2. TRANSCRIBE
     try:
         iso_code = LANGUAGE_CODES.get(language, "en")
-        
-        # KEY FIX: Use a prompt WRITTEN IN the target language
         native_prompt = NATIVE_PROMPTS.get(language, "This is a transcription.")
 
         segments, info = model.transcribe(
@@ -175,7 +172,7 @@ def analyze_logic(content: bytes, language: str):
             beam_size=5, 
             language=iso_code,
             task="transcribe",
-            initial_prompt=native_prompt  # <--- Priming in the native language
+            initial_prompt=native_prompt 
         )
         transcript = " ".join([s.text for s in segments]).strip()
         print(f"📝 Transcript ({language}): {transcript}")
@@ -226,7 +223,7 @@ def analyze_logic(content: bytes, language: str):
 
 @app.on_event("startup")
 async def startup_check():
-    print("\n🚀 STARTING SKILLSPEAK SERVER (Tiny + Native Prompts)...")
+    print("\n🚀 STARTING SKILLSPEAK SERVER (V3.3.0)...")
     if not shutil.which("ffmpeg"): print("❌ CRITICAL: FFmpeg is missing!")
     else: print("✅ FFmpeg found.")
     
@@ -305,6 +302,8 @@ class UserRegister(BaseModel):
     email: str; password: str; name: str
 class UserLogin(BaseModel):
     email: str; password: str
+class UserUpdate(BaseModel):
+    name: Optional[str] = None; preferred_language: Optional[str] = None; new_password: Optional[str] = None
 class AnalysisResponse(BaseModel):
     transcript: str; language: str; wpm: int; fillerWords: int
     fillerWordsList: List[str]; pronunciationScore: int; suggestions: List[str]; duration: int
@@ -362,6 +361,29 @@ async def login(d: UserLogin, db: Session = Depends(get_db)):
     u.last_login = datetime.utcnow(); db.commit()
     return {"token": create_token(u.id), "user_id": u.id, "name": u.name, "email": u.email, "preferred_language": u.preferred_language}
 
+# --- NEW: User Update Endpoint (Fixes "Not Updating in App") ---
+@app.put("/user/update")
+async def update_user(
+    d: UserUpdate, 
+    uid: int = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == uid).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # 1. Update Preferred Language (Force Capitalize)
+    if d.preferred_language:
+        user.preferred_language = d.preferred_language.capitalize()
+    
+    # 2. Update Name
+    if d.name:
+        user.name = d.name
+        
+    db.commit()
+    return {"success": True, "preferred_language": user.preferred_language}
+# -------------------------------------------------------------
+
 @app.post("/sessions")
 async def save_sess(
     language: str = Form(...), transcript: str = Form(...), wpm: int = Form(...),
@@ -369,10 +391,17 @@ async def save_sess(
     file_path: str = Form(""), filler_words_list: str = Form("[]"), suggestions: str = Form("[]"),
     uid: int = Depends(get_current_user), db: Session = Depends(get_db)
 ):
+    # 1. Force Capitalize Language (Fixes the Bug)
+    language = language.capitalize()
+
     s = UserSession(user_id=uid, language=language, transcript=transcript, wpm=wpm, filler_words=filler_words, pronunciation_score=pronunciation_score, duration=duration, file_path=file_path, filler_words_list=filler_words_list, suggestions=suggestions)
     db.add(s)
+    
     user = db.query(User).filter(User.id==uid).first()
-    if user: user.total_sessions += 1; user.preferred_language = language
+    if user: 
+        user.total_sessions += 1
+        user.preferred_language = language # Updates profile too
+        
     db.commit(); db.refresh(s)
     return {"session_id": s.id}
 
