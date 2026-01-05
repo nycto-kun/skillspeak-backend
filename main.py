@@ -1,10 +1,15 @@
 # --- FORCE IPv4 PATCH (CRITICAL FOR RENDER STABILITY) ---
 import socket
+import os # <--- Added
 _original_getaddrinfo = socket.getaddrinfo
 def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
     return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
 socket.getaddrinfo = getaddrinfo_ipv4
-# --------------------------------------------------------
+
+# --- FFmpeg PATH FIX (CRITICAL FOR AUDIO PROCESSING) ---
+# Add the local ffmpeg folder to the system PATH so pydub can find it
+os.environ["PATH"] += os.pathsep + os.path.join(os.getcwd(), "ffmpeg")
+# -------------------------------------------------------
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +18,6 @@ from faster_whisper import WhisperModel
 from pydub import AudioSegment, effects
 import io
 import tempfile
-import os
 import shutil
 from typing import List, Dict, Any, Optional
 import random
@@ -31,7 +35,7 @@ import re
 
 load_dotenv()
 
-app = FastAPI(title="Skillspeak API", version="3.4.0 (No Auto-Lang Switch)")
+app = FastAPI(title="Skillspeak API", version="3.5.0 (FFmpeg Patched)")
 
 # =================================================================
 # 🔑  CONFIGURATION
@@ -49,9 +53,6 @@ LANGUAGE_CODES = {
     "Japanese": "ja"
 }
 
-# =================================================================
-# 🧠 NATIVE PROMPTS
-# =================================================================
 NATIVE_PROMPTS = {
     "English": "This is a transcription. It is not a translation.",
     "Tagalog": "Ito ay isang transcription ng Tagalog audio. Huwag i-translate sa English.",
@@ -223,9 +224,16 @@ def analyze_logic(content: bytes, language: str):
 
 @app.on_event("startup")
 async def startup_check():
-    print("\n🚀 STARTING SKILLSPEAK SERVER (V3.4.0)...")
-    if not shutil.which("ffmpeg"): print("❌ CRITICAL: FFmpeg is missing!")
-    else: print("✅ FFmpeg found.")
+    print("\n🚀 STARTING SKILLSPEAK SERVER (V3.5.0 - FFmpeg Path Fix)...")
+    if not shutil.which("ffmpeg"): 
+        print("⚠️ FFmpeg binary not found in SYSTEM path. Checking LOCAL path...")
+        # Check if our hack worked
+        if os.path.exists("./ffmpeg/ffmpeg"):
+             print("✅ Local FFmpeg found! We are good to go.")
+        else:
+             print("❌ CRITICAL: FFmpeg still missing. Build script likely failed.")
+    else: 
+        print("✅ FFmpeg found in system path.")
     
     global model
     try:
@@ -365,14 +373,10 @@ async def login(d: UserLogin, db: Session = Depends(get_db)):
 async def update_user(d: UserUpdate, uid: int = Depends(get_current_user), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == uid).first()
     if not user: raise HTTPException(status_code=404, detail="User not found")
-    
     if d.preferred_language:
-        # Force capitalization (e.g., "french" -> "French") so it matches your dropdowns
         user.preferred_language = d.preferred_language.capitalize()
-    
     if d.name:
         user.name = d.name
-        
     db.commit()
     return {"success": True, "preferred_language": user.preferred_language}
 
@@ -383,15 +387,10 @@ async def save_sess(
     file_path: str = Form(""), filler_words_list: str = Form("[]"), suggestions: str = Form("[]"),
     uid: int = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    # FIXED: Just save the session, DO NOT overwrite user's preferred language.
     s = UserSession(user_id=uid, language=language.capitalize(), transcript=transcript, wpm=wpm, filler_words=filler_words, pronunciation_score=pronunciation_score, duration=duration, file_path=file_path, filler_words_list=filler_words_list, suggestions=suggestions)
     db.add(s)
-    
     user = db.query(User).filter(User.id==uid).first()
-    if user: 
-        user.total_sessions += 1
-        # LINE REMOVED HERE: user.preferred_language = language 
-        
+    if user: user.total_sessions += 1
     db.commit(); db.refresh(s)
     return {"session_id": s.id}
 
