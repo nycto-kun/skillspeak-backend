@@ -31,7 +31,7 @@ import re
 
 load_dotenv()
 
-app = FastAPI(title="Skillspeak API", version="3.3.0 (Profile Fixes)")
+app = FastAPI(title="Skillspeak API", version="3.4.0 (No Auto-Lang Switch)")
 
 # =================================================================
 # 🔑  CONFIGURATION
@@ -50,7 +50,7 @@ LANGUAGE_CODES = {
 }
 
 # =================================================================
-# 🧠 NATIVE PROMPTS (THE TRANSLATION FIX)
+# 🧠 NATIVE PROMPTS
 # =================================================================
 NATIVE_PROMPTS = {
     "English": "This is a transcription. It is not a translation.",
@@ -223,7 +223,7 @@ def analyze_logic(content: bytes, language: str):
 
 @app.on_event("startup")
 async def startup_check():
-    print("\n🚀 STARTING SKILLSPEAK SERVER (V3.3.0)...")
+    print("\n🚀 STARTING SKILLSPEAK SERVER (V3.4.0)...")
     if not shutil.which("ffmpeg"): print("❌ CRITICAL: FFmpeg is missing!")
     else: print("✅ FFmpeg found.")
     
@@ -361,28 +361,20 @@ async def login(d: UserLogin, db: Session = Depends(get_db)):
     u.last_login = datetime.utcnow(); db.commit()
     return {"token": create_token(u.id), "user_id": u.id, "name": u.name, "email": u.email, "preferred_language": u.preferred_language}
 
-# --- NEW: User Update Endpoint (Fixes "Not Updating in App") ---
 @app.put("/user/update")
-async def update_user(
-    d: UserUpdate, 
-    uid: int = Depends(get_current_user), 
-    db: Session = Depends(get_db)
-):
+async def update_user(d: UserUpdate, uid: int = Depends(get_current_user), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == uid).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    if not user: raise HTTPException(status_code=404, detail="User not found")
     
-    # 1. Update Preferred Language (Force Capitalize)
     if d.preferred_language:
+        # Force capitalization (e.g., "french" -> "French") so it matches your dropdowns
         user.preferred_language = d.preferred_language.capitalize()
     
-    # 2. Update Name
     if d.name:
         user.name = d.name
         
     db.commit()
     return {"success": True, "preferred_language": user.preferred_language}
-# -------------------------------------------------------------
 
 @app.post("/sessions")
 async def save_sess(
@@ -391,16 +383,14 @@ async def save_sess(
     file_path: str = Form(""), filler_words_list: str = Form("[]"), suggestions: str = Form("[]"),
     uid: int = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    # 1. Force Capitalize Language (Fixes the Bug)
-    language = language.capitalize()
-
-    s = UserSession(user_id=uid, language=language, transcript=transcript, wpm=wpm, filler_words=filler_words, pronunciation_score=pronunciation_score, duration=duration, file_path=file_path, filler_words_list=filler_words_list, suggestions=suggestions)
+    # FIXED: Just save the session, DO NOT overwrite user's preferred language.
+    s = UserSession(user_id=uid, language=language.capitalize(), transcript=transcript, wpm=wpm, filler_words=filler_words, pronunciation_score=pronunciation_score, duration=duration, file_path=file_path, filler_words_list=filler_words_list, suggestions=suggestions)
     db.add(s)
     
     user = db.query(User).filter(User.id==uid).first()
     if user: 
         user.total_sessions += 1
-        user.preferred_language = language # Updates profile too
+        # LINE REMOVED HERE: user.preferred_language = language 
         
     db.commit(); db.refresh(s)
     return {"session_id": s.id}
