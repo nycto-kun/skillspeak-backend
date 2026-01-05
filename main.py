@@ -33,7 +33,7 @@ import re  # For regex cleaning
 # Load environment variables
 load_dotenv()
 
-app = FastAPI(title="Skillspeak API", version="2.2.0")
+app = FastAPI(title="Skillspeak API", version="2.3.0")
 
 # =================================================================
 # 🔑  CONFIGURATION
@@ -108,7 +108,13 @@ def analyze_logic(content: bytes, language: str):
     # 2. TRANSCRIBE (Using 'tiny' model)
     try:
         # beam_size=5 helps 'tiny' be slightly more accurate
-        segments, info = model.transcribe(path, beam_size=5, language=LANGUAGE_CODES.get(language, "en"))
+        # task="transcribe" PREVENTS auto-translation (e.g. Tagalog -> English)
+        segments, info = model.transcribe(
+            path, 
+            beam_size=5, 
+            language=LANGUAGE_CODES.get(language, "en"),
+            task="transcribe" 
+        )
         transcript = " ".join([s.text for s in segments]).strip()
         print(f"📝 Transcript ({language}): {transcript}")
     except Exception as e:
