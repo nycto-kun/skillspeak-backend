@@ -66,7 +66,7 @@ FILLER_WORDS = {
     "Tagalog": ["ano", "parang", "kuwan", "ah", "eh", "bale", "kumbaga"],
     "Spanish": ["eh", "este", "bueno", "o sea", "pues", "sabes", "entonces"],
     "French": ["euh", "bah", "ben", "genre", "en fait", "tu vois", "du coup"],
-    "Japanese": ["eto", "ano", "nanka", "ma", "sono", "eeto"]
+    "Japanese": ["あの", "ええと", "まあ", "その"],
 }
 
 SUGGESTIONS_DB = {
