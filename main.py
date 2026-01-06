@@ -1,23 +1,28 @@
 # --- FORCE IPv4 PATCH (CRITICAL FOR RENDER STABILITY) ---
 import socket
-import os  # <--- REQUIRED FOR FFmpeg PATH
+import os
 _original_getaddrinfo = socket.getaddrinfo
 def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
     return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
 socket.getaddrinfo = getaddrinfo_ipv4
 
-# --- FFmpeg PATH FIX (CRITICAL FOR AUDIO PROCESSING) ---
+# --- FFmpeg PATH FIX ---
 os.environ["PATH"] += os.pathsep + os.path.join(os.getcwd(), "ffmpeg")
-# -------------------------------------------------------
+
+# --- SETUP UPLOADS FOLDER ---
+UPLOAD_DIR = "uploads"
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Form, Header
+from fastapi.staticfiles import StaticFiles  # <--- NEW: To serve audio files
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
 from pydub import AudioSegment, effects 
 import io
-import tempfile
 import shutil
+import uuid
 from typing import List, Dict, Any, Optional
 import random
 import hashlib
@@ -35,7 +40,10 @@ import re
 
 load_dotenv()
 
-app = FastAPI(title="Skillspeak API", version="2.5.0 (Tiny + Native Prompts + Manual Update)")
+app = FastAPI(title="Skillspeak API", version="3.0.0 (Storage + Language Fix)")
+
+# --- MOUNT UPLOADS FOLDER (Allows playback via URL) ---
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # =================================================================
 # 🔑  CONFIGURATION
@@ -47,7 +55,7 @@ ALGORITHM = os.getenv("ALGORITHM", "HS256")
 LANGUAGE_CODES = {"English": "en", "Tagalog": "tl", "Spanish": "es", "French": "fr", "Japanese": "ja"}
 
 # =================================================================
-# 🧠 NATIVE PROMPTS (THE FIX FOR TINY MODEL)
+# 🧠 NATIVE PROMPTS (Forces Transcription)
 # =================================================================
 NATIVE_PROMPTS = {
     "English": "This is a transcription. It is not a translation.",
@@ -66,7 +74,7 @@ FILLER_WORDS = {
     "Tagalog": ["ano", "parang", "kuwan", "ah", "eh", "bale", "kumbaga"],
     "Spanish": ["eh", "este", "bueno", "o sea", "pues", "sabes", "entonces"],
     "French": ["euh", "bah", "ben", "genre", "en fait", "tu vois", "du coup"],
-    "Japanese": ["あの", "ええと", "まあ", "その"],
+    "Japanese": ["eto", "ano", "nanka", "ma", "sono", "eeto"]
 }
 
 SUGGESTIONS_DB = {
@@ -118,7 +126,6 @@ SUGGESTIONS_DB = {
 }
 
 def generate_smart_suggestions(wpm: int, filler_count: int, language: str, duration: float, common_filler: str) -> List[str]:
-    # Default to English if language not found
     lang_key = language if language in SUGGESTIONS_DB else "English"
     templates = SUGGESTIONS_DB[lang_key]
     suggestions = []
@@ -144,31 +151,43 @@ def generate_smart_suggestions(wpm: int, filler_count: int, language: str, durat
 
     return suggestions
 
-def analyze_logic(content: bytes, language: str):
+def analyze_logic(content: bytes, language: str, filename: str):
     language = language.capitalize()
 
+    # 1. SAVE RAW AUDIO TO STORAGE (Your Request)
+    # We generate a unique name so files don't overwrite each other
+    unique_filename = f"{uuid.uuid4().hex}_{filename}"
+    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    
+    with open(file_path, "wb") as f:
+        f.write(content)
+        
+    # Create the URL for playback
+    # NOTE: On Render, this URL is publicly accessible
+    audio_url = f"/uploads/{unique_filename}"
+
+    # 2. PROCESS AUDIO
     try:
         raw_audio = AudioSegment.from_file(io.BytesIO(content))
         normalized_audio = effects.normalize(raw_audio)
         
+        # Temp WAV for Whisper
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
             normalized_audio.export(f.name, format="wav")
-            path = f.name
+            wav_path = f.name
             
         duration = len(normalized_audio) / 1000.0
     except Exception as e:
         print(f"Audio Processing Error: {e}")
         return {"error": "Invalid audio file"}
 
-    # --- TRANSCRIPTION WITH NATIVE PROMPTS ---
+    # 3. TRANSCRIPTION
     try:
         iso_code = LANGUAGE_CODES.get(language, "en")
-        
-        # Prime the model to stop translation
         native_prompt = NATIVE_PROMPTS.get(language, "This is a transcription.")
 
         segments, info = model.transcribe(
-            path, 
+            wav_path, 
             beam_size=5, 
             language=iso_code,
             initial_prompt=native_prompt 
@@ -179,8 +198,8 @@ def analyze_logic(content: bytes, language: str):
         print(f"Transcribe Error: {e}")
         transcript = ""
     finally:
-        if os.path.exists(path):
-            os.unlink(path)
+        if os.path.exists(wav_path):
+            os.unlink(wav_path)
 
     clean_text = re.sub(r'[^\w\s]', '', transcript.lower()) 
     words = clean_text.split()
@@ -216,14 +235,15 @@ def analyze_logic(content: bytes, language: str):
         "fillerWordsList": found_fillers,
         "pronunciationScore": pronunciation_score,
         "suggestions": suggestions,
-        "duration": int(duration)
+        "duration": int(duration),
+        "audioUrl": audio_url # <--- Send this back to the app
     }
 
 # =================================================================
 
 @app.on_event("startup")
 async def startup_check():
-    print("\n🚀 STARTING SKILLSPEAK SERVER (V2.5.0 - Final)...")
+    print("\n🚀 STARTING SKILLSPEAK SERVER (V3.0.0)...")
     if not shutil.which("ffmpeg"): 
         print("⚠️ FFmpeg binary not found in SYSTEM path. Checking LOCAL path...")
         if os.path.exists("./ffmpeg/ffmpeg"):
@@ -313,6 +333,7 @@ class UserUpdate(BaseModel):
 class AnalysisResponse(BaseModel):
     transcript: str; language: str; wpm: int; fillerWords: int
     fillerWordsList: List[str]; pronunciationScore: int; suggestions: List[str]; duration: int
+    audioUrl: str # <--- NEW FIELD
 class EmailVerificationRequest(BaseModel):
     email: str; otp: str
 class ResendOTPRequest(BaseModel):
@@ -343,9 +364,15 @@ def send_email(to: str, otp: str):
     try: requests.post(url, json=payload, headers=headers); return True
     except: return False
 
+# --- THE FIXED ENDPOINT (USING Form() instead of Query Param) ---
 @app.post("/analyze-file", response_model=AnalysisResponse)
-async def analyze(language: str = "English", audio: UploadFile = File(...)):
-    return analyze_logic(await audio.read(), language)
+async def analyze(
+    language: str = Form("English"),  # <--- THIS IS THE FIX!
+    audio: UploadFile = File(...)
+):
+    content = await audio.read()
+    return analyze_logic(content, language, audio.filename)
+# -------------------------------------------------------------
 
 @app.post("/register")
 async def register(d: UserRegister, db: Session = Depends(get_db)):
