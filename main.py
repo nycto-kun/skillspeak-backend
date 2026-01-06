@@ -15,7 +15,7 @@ if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Form, Header
-from fastapi.staticfiles import StaticFiles  # <--- NEW: To serve audio files
+from fastapi.staticfiles import StaticFiles 
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
@@ -23,6 +23,7 @@ from pydub import AudioSegment, effects
 import io
 import shutil
 import uuid
+import tempfile # <--- FIXED: This was missing and caused the crash
 from typing import List, Dict, Any, Optional
 import random
 import hashlib
@@ -40,9 +41,9 @@ import re
 
 load_dotenv()
 
-app = FastAPI(title="Skillspeak API", version="3.0.0 (Storage + Language Fix)")
+app = FastAPI(title="Skillspeak API", version="3.1.0 (Fixed Imports & Logic)")
 
-# --- MOUNT UPLOADS FOLDER (Allows playback via URL) ---
+# --- MOUNT UPLOADS FOLDER ---
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # =================================================================
@@ -154,16 +155,13 @@ def generate_smart_suggestions(wpm: int, filler_count: int, language: str, durat
 def analyze_logic(content: bytes, language: str, filename: str):
     language = language.capitalize()
 
-    # 1. SAVE RAW AUDIO TO STORAGE (Your Request)
-    # We generate a unique name so files don't overwrite each other
+    # 1. SAVE RAW AUDIO TO STORAGE
     unique_filename = f"{uuid.uuid4().hex}_{filename}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
     
     with open(file_path, "wb") as f:
         f.write(content)
         
-    # Create the URL for playback
-    # NOTE: On Render, this URL is publicly accessible
     audio_url = f"/uploads/{unique_filename}"
 
     # 2. PROCESS AUDIO
@@ -171,7 +169,7 @@ def analyze_logic(content: bytes, language: str, filename: str):
         raw_audio = AudioSegment.from_file(io.BytesIO(content))
         normalized_audio = effects.normalize(raw_audio)
         
-        # Temp WAV for Whisper
+        # Temp WAV for Whisper (Requires 'import tempfile')
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
             normalized_audio.export(f.name, format="wav")
             wav_path = f.name
@@ -179,7 +177,8 @@ def analyze_logic(content: bytes, language: str, filename: str):
         duration = len(normalized_audio) / 1000.0
     except Exception as e:
         print(f"Audio Processing Error: {e}")
-        return {"error": "Invalid audio file"}
+        # FIXED: Raise Exception instead of returning dict to prevent 500 error
+        raise HTTPException(status_code=400, detail="Invalid audio file format")
 
     # 3. TRANSCRIPTION
     try:
@@ -236,14 +235,14 @@ def analyze_logic(content: bytes, language: str, filename: str):
         "pronunciationScore": pronunciation_score,
         "suggestions": suggestions,
         "duration": int(duration),
-        "audioUrl": audio_url # <--- Send this back to the app
+        "audioUrl": audio_url 
     }
 
 # =================================================================
 
 @app.on_event("startup")
 async def startup_check():
-    print("\n🚀 STARTING SKILLSPEAK SERVER (V3.0.0)...")
+    print("\n🚀 STARTING SKILLSPEAK SERVER (V3.1.0)...")
     if not shutil.which("ffmpeg"): 
         print("⚠️ FFmpeg binary not found in SYSTEM path. Checking LOCAL path...")
         if os.path.exists("./ffmpeg/ffmpeg"):
@@ -333,7 +332,7 @@ class UserUpdate(BaseModel):
 class AnalysisResponse(BaseModel):
     transcript: str; language: str; wpm: int; fillerWords: int
     fillerWordsList: List[str]; pronunciationScore: int; suggestions: List[str]; duration: int
-    audioUrl: str # <--- NEW FIELD
+    audioUrl: str 
 class EmailVerificationRequest(BaseModel):
     email: str; otp: str
 class ResendOTPRequest(BaseModel):
@@ -364,15 +363,13 @@ def send_email(to: str, otp: str):
     try: requests.post(url, json=payload, headers=headers); return True
     except: return False
 
-# --- THE FIXED ENDPOINT (USING Form() instead of Query Param) ---
 @app.post("/analyze-file", response_model=AnalysisResponse)
 async def analyze(
-    language: str = Form("English"),  # <--- THIS IS THE FIX!
+    language: str = Form("English"),
     audio: UploadFile = File(...)
 ):
     content = await audio.read()
     return analyze_logic(content, language, audio.filename)
-# -------------------------------------------------------------
 
 @app.post("/register")
 async def register(d: UserRegister, db: Session = Depends(get_db)):
